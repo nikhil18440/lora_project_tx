@@ -1,0 +1,192 @@
+#include <SPI.h>
+#include <LoRa.h>
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SH110X.h>
+
+// -------- LoRa Pins (ESP32) --------
+#define LORA_SCK   18
+#define LORA_MISO  19
+#define LORA_MOSI  23
+#define LORA_CS    5
+#define LORA_RST   14
+#define LORA_DIO0  26
+
+// -------- LoRa Radio Settings --------
+#define LORA_FREQ 433E6   // Use 865–867 MHz in India
+#define LED_PIN        2       // Onboard LED (use 2 / 25 / 4 as per your board)
+const uint8_t SYNC_WORD      = 0x12;
+const int     SPREAD_FACTOR  = 7;
+const long    BANDWIDTH      = 125E3;
+const int     CODING_RATE    = 5;
+
+// -------- OLED (SH1106) Settings --------
+// I2C pins (ESP32 defaults: SDA=21, SCL=22)
+#define I2C_SDA 21
+#define I2C_SCL 22
+#define OLED_ADDR 0x3C
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+
+// SH1106 driver: 128x64 over I2C
+Adafruit_SH1106G display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire);
+
+// --- Simple word-wrap helper for size=1 text (~21 chars/line comfortably) ---
+void printWrapped(const String& text, int16_t x, int16_t y, uint8_t maxCharsPerLine = 21) {
+  int16_t cx = x;
+  int16_t cy = y;
+
+  String word;
+  String line;
+
+  for (uint16_t i = 0; i <= text.length(); i++) {
+    char c = (i < text.length()) ? text[i] : ' '; // trigger flush at end
+    if (c == ' ' || c == '\n' || i == text.length()) {
+      // consider adding current word
+      String candidate = line + (line.length() ? " " : "") + word;
+      if (candidate.length() > maxCharsPerLine || c == '\n') {
+        // print current line
+        display.setCursor(cx, cy);
+        display.print(line);
+        line = word; // start new line with the word
+        cy += 10;    // advance ~1 line for size=1 font
+        if (cy > (SCREEN_HEIGHT - 8)) { // stop if no space
+          return;
+        }
+      } else {
+        line = candidate;
+      }
+      word = "";
+    } else {
+      word += c;
+    }
+  }
+
+  // print leftover line
+  if (line.length()) {
+    display.setCursor(cx, cy);
+    display.print(line);
+  }
+}
+
+void setup() {
+  Serial.begin(115200);
+  while (!Serial);
+
+  pinMode(LED_PIN, OUTPUT);
+  digitalWrite(LED_PIN, LOW);
+
+  // --- OLED init ---
+  Wire.begin(I2C_SDA, I2C_SCL);
+  if (!display.begin(OLED_ADDR, true)) { // true = reset display
+    // If begin fails, just continue without OLED to keep LoRa running
+    Serial.println("WARN: OLED not found. Check wiring/address.");
+  } else {
+    display.clearDisplay();
+    display.setTextSize(1);
+    display.setTextColor(SH110X_WHITE);
+    display.setCursor(0, 0);
+    display.println("LoRa Receiver");
+    display.println("OLED OK @ 0x3C");
+    display.display();
+  }
+
+  Serial.println();
+  Serial.println("LoRa Receiver - starting...");
+
+  SPI.begin(LORA_SCK, LORA_MISO, LORA_MOSI, LORA_CS);
+  LoRa.setPins(LORA_CS, LORA_RST, LORA_DIO0);
+
+  if (!LoRa.begin(LORA_FREQ)) {
+    Serial.println("ERROR: LoRa init failed. Check wiring and power.");
+    // Blink LED fast to indicate error
+    while (true) {
+      digitalWrite(LED_PIN, HIGH); delay(150);
+      digitalWrite(LED_PIN, LOW);  delay(150);
+    }
+  }
+
+  // Match sender - long-range profile
+LoRa.setSpreadingFactor(12);
+LoRa.setSignalBandwidth(62.5E3);
+LoRa.setCodingRate4(8);
+LoRa.setPreambleLength(12);
+LoRa.setSyncWord(SYNC_WORD);
+LoRa.enableCrc();
+
+
+  Serial.println("LoRa initialized OK");
+  Serial.print("Freq: "); Serial.println(LORA_FREQ);
+  Serial.print("SF: "); Serial.println(SPREAD_FACTOR);
+  Serial.print("BW: "); Serial.println(BANDWIDTH);
+  Serial.print("SyncWord: 0x"); Serial.println(SYNC_WORD, HEX);
+
+  // Splash “ready” screen
+  if (display.getBuffer()) {
+    display.clearDisplay();
+    display.setCursor(0, 0);
+    display.println("LoRa RX Ready");
+    display.println("----------------");
+    display.println("Waiting packets...");
+    display.display();
+  }
+}
+
+void loop() {
+  int packetSize = LoRa.parsePacket();
+  if (packetSize) {
+    // LED ON while processing packet
+    digitalWrite(LED_PIN, HIGH);
+
+    Serial.print("Packet size: ");
+    Serial.println(packetSize);
+
+    String received = "";
+    unsigned long start = millis();
+    while (LoRa.available()) {
+      received += (char)LoRa.read();
+      if (millis() - start > 2000) break; // safety timeout
+    }
+
+    int rssi = LoRa.packetRssi();
+    int snr  = LoRa.packetSnr();
+
+    Serial.print("Received: ");
+    Serial.println(received);
+    Serial.print("RSSI: ");
+    Serial.println(rssi);
+    Serial.print("SNR: ");
+    Serial.println(snr);
+
+    // ---- OLED update ----
+    if (display.getBuffer()) {
+      display.clearDisplay();
+      display.setTextSize(1);
+      display.setTextColor(SH110X_WHITE);
+
+      // Header
+      display.setCursor(0, 0);
+      display.println("LoRa RX");
+
+      // Message (wrapped)
+      display.setCursor(0, 12);
+      printWrapped(received, 0, 12, 21);
+
+      // Footer with RSSI/SNR (bottom lines)
+      display.setCursor(0, 54);
+      display.print("RSSI:");
+      display.print(rssi);
+      display.print("  SNR:");
+      display.print(snr);
+
+      display.display();
+    }
+
+    // quick blink to show reception
+    digitalWrite(LED_PIN, LOW);
+    delay(80);
+    digitalWrite(LED_PIN, HIGH);
+    delay(80);
+    digitalWrite(LED_PIN, LOW);
+  }
+}

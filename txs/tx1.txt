@@ -1,0 +1,87 @@
+#include <SPI.h>
+#include <LoRa.h>
+
+#define LORA_SCK   18
+#define LORA_MISO  19
+#define LORA_MOSI  23
+#define LORA_CS    5
+#define LORA_RST   14
+#define LORA_DIO0  26
+
+
+
+
+#define LORA_FREQ 433E6 // Use 865–867 MHz (India)
+#define LED_PIN        2       // Onboard LED (change if boot fails)
+const uint8_t SYNC_WORD      = 0x12;
+const int     TX_POWER       = 17;
+const int     SPREAD_FACTOR  = 7;
+const long    BANDWIDTH      = 125E3;
+const int     CODING_RATE    = 5;
+
+
+
+
+void setup() {
+  Serial.begin(115200);
+  while (!Serial);
+
+  pinMode(LED_PIN, OUTPUT);
+  digitalWrite(LED_PIN, LOW);
+
+  Serial.println();
+  Serial.println("LoRa Sender - starting...");
+
+  SPI.begin(LORA_SCK, LORA_MISO, LORA_MOSI, LORA_CS);
+  LoRa.setPins(LORA_CS, LORA_RST, LORA_DIO0);
+
+  if (!LoRa.begin(LORA_FREQ)) {
+    Serial.println("ERROR: LoRa init failed. Check wiring and power.");
+    while (true) {
+      digitalWrite(LED_PIN, HIGH); delay(200);
+      digitalWrite(LED_PIN, LOW);  delay(200);
+    }
+  }
+
+ // Long-range configuration (move your LoRa settings here)
+  LoRa.setTxPower(18);            // Max output (usually 20 dBm)
+  LoRa.setSpreadingFactor(12);    // SF12 = longest range
+  LoRa.setSignalBandwidth(62.5E3);// 62.5 kHz bandwidth
+  LoRa.setCodingRate4(8);         // 4/8 coding rate
+  LoRa.setPreambleLength(12);     // longer preamble helps sync
+  LoRa.setSyncWord(SYNC_WORD);    // same on TX/RX
+  LoRa.enableCrc();
+
+  Serial.println("LoRa initialized OK with long-range settings!");
+  Serial.print("Freq: "); Serial.println(LORA_FREQ);
+  Serial.print("SF: "); Serial.println(SPREAD_FACTOR);
+  Serial.print("BW: "); Serial.println(BANDWIDTH);
+  Serial.print("CR(4/x): 4/"); Serial.println(CODING_RATE);
+  Serial.print("SyncWord: 0x"); Serial.println(SYNC_WORD, HEX);
+  Serial.print("TX power: "); Serial.println(TX_POWER);
+} // properly closed setup() function
+
+void loop() {
+  static int counter = 0;
+  String message = "Hello LoRa #" + String(counter++);
+
+  Serial.print("Sending: ");
+  Serial.println(message);
+
+  digitalWrite(LED_PIN, HIGH);  // LED ON while sending
+
+  LoRa.beginPacket();
+  LoRa.print(message);
+  int err = LoRa.endPacket();
+  digitalWrite(LED_PIN, LOW);
+
+  Serial.print("endPacket() returned: ");
+  Serial.println(err);
+
+  // Blink LED briefly
+  digitalWrite(LED_PIN, HIGH);
+  delay(80);
+  digitalWrite(LED_PIN, LOW);
+
+  delay(2000);
+}
